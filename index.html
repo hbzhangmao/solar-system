@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>太阳-地球-月球 运动模拟</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { overflow: hidden; background: #0a0a2e; }
+canvas { display: block; }
+#info {
+  position: absolute; top: 10px; left: 10px; color: #fff;
+  font-family: 'Helvetica Neue', sans-serif; font-size: 14px;
+  background: rgba(0,0,0,0.6); padding: 12px 16px; border-radius: 8px;
+  pointer-events: none; line-height: 1.6;
+}
+#controls {
+  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 12px; align-items: center;
+  background: rgba(0,0,0,0.6); padding: 10px 20px; border-radius: 8px;
+  color: #fff; font-family: 'Helvetica Neue', sans-serif; font-size: 13px;
+}
+#controls label { white-space: nowrap; }
+#speedRange { width: 120px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="info">
+  🌞 太阳 &nbsp; 🌍 地球 &nbsp; 🌙 月球<br>
+  鼠标拖拽旋转 · 滚轮缩放 · 右键平移
+</div>
+<div id="controls">
+  <label>速度: <input type="range" id="speedRange" min="0" max="5" step="0.1" value="1"></label>
+  <span id="speedVal">1.0x</span>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// --- Scene setup ---
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(0, 80, 160);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 30;
+controls.maxDistance = 500;
+
+// --- Starfield ---
+const starGeo = new THREE.BufferGeometry();
+const starCount = 6000;
+const starPos = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount * 3; i++) starPos[i] = (Math.random() - 0.5) * 1500;
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.6 })));
+
+// --- Texture helper ---
+function makeCanvasTexture(size, drawFn) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  drawFn(c.getContext('2d'), size);
+  return new THREE.CanvasTexture(c);
+}
+
+// --- Sun ---
+const sunTex = makeCanvasTexture(512, (ctx, s) => {
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0, '#fff8e0');
+  g.addColorStop(0.3, '#ffcc00');
+  g.addColorStop(0.7, '#ff8800');
+  g.addColorStop(1, '#cc4400');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  // noise spots
+  for (let i = 0; i < 200; i++) {
+    ctx.fillStyle = `rgba(255,${100+Math.random()*100|0},0,${Math.random()*0.3})`;
+    const x = Math.random()*s, y = Math.random()*s, r = Math.random()*8+2;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+  }
+});
+const sunMat = new THREE.MeshBasicMaterial({ map: sunTex });
+const sun = new THREE.Mesh(new THREE.SphereGeometry(12, 64, 64), sunMat);
+scene.add(sun);
+
+// Sun glow
+const glowMat = new THREE.SpriteMaterial({
+  map: makeCanvasTexture(256, (ctx, s) => {
+    const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+    g.addColorStop(0, 'rgba(255,200,50,0.6)');
+    g.addColorStop(0.4, 'rgba(255,150,0,0.15)');
+    g.addColorStop(1, 'rgba(255,100,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, s, s);
+  }),
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+});
+const glow = new THREE.Sprite(glowMat);
+glow.scale.set(50, 50, 1);
+sun.add(glow);
+
+// Sun light
+const sunLight = new THREE.PointLight(0xfff0dd, 2, 500);
+scene.add(sunLight);
+scene.add(new THREE.AmbientLight(0x668899, 1.2));
+
+// --- Earth ---
+const earthTex = makeCanvasTexture(512, (ctx, s) => {
+  // ocean — brighter blue
+  ctx.fillStyle = '#2980b9';
+  ctx.fillRect(0, 0, s, s);
+  // continents (simplified blobs)
+  ctx.fillStyle = '#2ecc71';
+  const continents = [
+    [120,80,90,70],[280,60,80,50],[350,120,60,80],
+    [100,200,120,60],[250,180,70,90],[380,250,80,60],
+    [200,300,100,70],[60,320,50,40],[320,350,60,50]
+  ];
+  continents.forEach(([x,y,w,h]) => {
+    ctx.beginPath();
+    ctx.ellipse(x*s/512, y*s/512, w*s/1024, h*s/1024, Math.random(), 0, Math.PI*2);
+    ctx.fill();
+  });
+  // ice caps
+  ctx.fillStyle = '#ecf0f1';
+  ctx.fillRect(0, 0, s, s*0.06);
+  ctx.fillRect(0, s*0.94, s, s*0.06);
+  // clouds
+  for (let i = 0; i < 80; i++) {
+    ctx.fillStyle = `rgba(255,255,255,${Math.random()*0.15})`;
+    ctx.beginPath();
+    ctx.ellipse(Math.random()*s, Math.random()*s, Math.random()*40+10, Math.random()*15+5, Math.random()*Math.PI, 0, Math.PI*2);
+    ctx.fill();
+  }
+});
+const earthMat = new THREE.MeshPhongMaterial({ map: earthTex, shininess: 25, emissive: 0x112244, emissiveIntensity: 0.3 });
+const earth = new THREE.Mesh(new THREE.SphereGeometry(5, 48, 48), earthMat);
+
+// Earth pivot (for orbiting around sun)
+const earthPivot = new THREE.Object3D();
+scene.add(earthPivot);
+earth.position.x = 60;
+earthPivot.add(earth);
+
+// Earth axial tilt
+earth.rotation.z = 23.4 * Math.PI / 180;
+
+// Earth atmosphere glow
+const atmosMat = new THREE.MeshBasicMaterial({
+  color: 0x4488ff, transparent: true, opacity: 0.15,
+  side: THREE.BackSide, blending: THREE.AdditiveBlending
+});
+const atmos = new THREE.Mesh(new THREE.SphereGeometry(5.8, 48, 48), atmosMat);
+earth.add(atmos);
+
+// --- Moon ---
+const moonTex = makeCanvasTexture(256, (ctx, s) => {
+  ctx.fillStyle = '#e8e8e8';
+  ctx.fillRect(0, 0, s, s);
+  // craters
+  for (let i = 0; i < 60; i++) {
+    const x = Math.random()*s, y = Math.random()*s, r = Math.random()*12+3;
+    ctx.fillStyle = `rgba(${180+Math.random()*40|0},${180+Math.random()*40|0},${180+Math.random()*40|0},0.6)`;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = `rgba(240,240,240,0.3)`;
+    ctx.beginPath(); ctx.arc(x-r*0.2, y-r*0.2, r*0.7, 0, Math.PI*2); ctx.fill();
+  }
+});
+const moon = new THREE.Mesh(
+  new THREE.SphereGeometry(1.5, 32, 32),
+  new THREE.MeshPhongMaterial({ map: moonTex, shininess: 5, emissive: 0x333333, emissiveIntensity: 0.4 })
+);
+
+// Moon pivot (orbits around earth)
+const moonPivot = new THREE.Object3D();
+earth.add(moonPivot);
+moon.position.x = 12;
+moonPivot.add(moon);
+
+// Moon orbit tilt
+moonPivot.rotation.x = 5.14 * Math.PI / 180;
+
+// --- Orbit lines ---
+function makeOrbitLine(radius, parent, color = 0x444466) {
+  const pts = [];
+  for (let i = 0; i <= 128; i++) {
+    const a = (i / 128) * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius));
+  }
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.35 })
+  );
+  parent.add(line);
+}
+makeOrbitLine(60, scene, 0x3366aa);   // earth orbit
+makeOrbitLine(12, earth, 0x666688);   // moon orbit
+
+// --- Labels ---
+function makeLabel(text, parent, yOffset) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.font = 'bold 36px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, 128, 42);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true, depthTest: false
+  }));
+  sprite.scale.set(12, 3, 1);
+  sprite.position.y = yOffset;
+  parent.add(sprite);
+}
+makeLabel('太阳', sun, 16);
+makeLabel('地球', earth, 8);
+makeLabel('月球', moon, 3.5);
+
+// --- Speed control ---
+let speed = 1;
+const speedRange = document.getElementById('speedRange');
+const speedVal = document.getElementById('speedVal');
+speedRange.addEventListener('input', () => {
+  speed = parseFloat(speedRange.value);
+  speedVal.textContent = speed.toFixed(1) + 'x';
+});
+
+// --- Animation ---
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta() * speed;
+
+  // Sun rotation
+  sun.rotation.y += dt * 0.1;
+
+  // Earth orbit (~365 day period mapped)
+  earthPivot.rotation.y += dt * 0.3;
+
+  // Earth self-rotation
+  earth.rotation.y += dt * 2;
+
+  // Moon orbit (~27 day period)
+  moonPivot.rotation.y += dt * 1.2;
+
+  // Moon self-rotation (tidally locked)
+  moon.rotation.y += dt * 1.2;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// --- Resize ---
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
